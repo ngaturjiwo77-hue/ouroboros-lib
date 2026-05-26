@@ -5,8 +5,15 @@ on:
     branches: [ main ]
 
 jobs:
-  deploy:
+  build-and-deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v3
 
@@ -16,6 +23,7 @@ jobs:
       - name: Create Web App
         run: |
           mkdir -p _site
+          cp _site/scanner.js . 2>/dev/null || true
           cat > _site/index.html << 'HTMLEOF'
           <!DOCTYPE html>
           <html lang="en">
@@ -35,7 +43,7 @@ jobs:
           </style>
           </head>
           <body>
-          <h1>🐍 Ouroboros Scanner</h1>
+          <h1>Ouroboros Scanner</h1>
           <div class="card">
           <h3>Paste Python/JS/Go/Java code:</h3>
           <textarea id="code" placeholder="Paste source code here...">import os
@@ -45,7 +53,53 @@ jobs:
           <button onclick="scan()">Scan for Voids</button>
           </div>
           <pre id="output">Results will appear here...</pre>
-          <script src="scanner.js"></script>
+          <script>
+          // Ouroboros Scanner
+          const VY = [
+              {n:'exec/eval',p:/exec\s*\(|eval\s*\(/gi,c:'code_execution'},
+              {n:'os.system',p:/os\.system\s*\(/gi,c:'command_execution'},
+              {n:'subprocess',p:/subprocess\.(call|Popen|run)\s*\(/gi,c:'command_execution'},
+              {n:'pickle',p:/pickle\.(load|loads)\s*\(/gi,c:'deserialization'},
+              {n:'torch.load',p:/torch\.load\s*\(/gi,c:'deserialization'},
+              {n:'joblib',p:/joblib\.load\s*\(/gi,c:'deserialization'},
+              {n:'open(w)',p:/open\s*\([^)]*['"][wa]/gi,c:'file_operation'},
+              {n:'socket',p:/\.connect\s*\(|socket\.socket\s*\(/gi,c:'network'},
+              {n:'unquote',p:/unquote_plus\s*\(/gi,c:'decoding'},
+              {n:'json.loads',p:/json\.loads\s*\(/gi,c:'deserialization'},
+              {n:'Runtime.exec',p:/Runtime\.exec\s*\(/gi,c:'command_execution'},
+          ];
+          const WEAK = [
+              {n:'startswith',p:/\.startswith\s*\(/gi,d:'startswith() can be bypassed with prefix injection'},
+              {n:'endswith',p:/\.endswith\s*\(/gi,d:'endswith() can be bypassed with null byte/double extension'},
+          ];
+          function scan(){
+              const c=document.getElementById('code').value;
+              const o=document.getElementById('output');
+              const l=c.split('\n');
+              let r='PHASE 1: Anchoring (Vy)\n'+'='.repeat(40)+'\n\n';
+              let a=[],v=[];
+              l.forEach((ln,i)=>{
+                  VY.forEach(x=>{if(x.p.test(ln)){a.push({l:i+1,n:x.n,c:x.c,cd:ln.trim()});r+='[Vy] L'+(i+1)+': '+x.n+' ('+x.c+')\n     '+ln.trim().substring(0,80)+'\n';}});
+              });
+              if(!a.length)r+='(No execution points found)\n';
+              r+='\nPHASE 2: Back-Sweep (Voids)\n'+'='.repeat(40)+'\n\n';
+              a.forEach(an=>{
+                  for(let i=an.l-2;i>=Math.max(0,an.l-50);i--){
+                      const ln=l[i]||'';
+                      WEAK.forEach(w=>{if(w.p.test(ln)){v.push({l:i+1,n:w.n,d:w.d,cd:ln.trim(),vy:an});r+='[!] L'+(i+1)+': '+w.d+'\n     '+ln.trim().substring(0,80)+'\n     -> Leads to: '+an.n+' at L'+an.l+'\n';}});
+                      if(/input\(|sys\.argv|request\.|\.get\(|recv\(|read\(/.test(ln)){r+='[->] L'+(i+1)+': Input source\n     '+ln.trim().substring(0,80)+'\n';break;}
+                  }
+              });
+              if(!v.length)r+='(No voids found)\n';
+              r+='\nSUMMARY\n'+'='.repeat(40)+'\n\n';
+              r+='Anchors: '+a.length+' | Voids: '+v.length+'\n';
+              const s=Math.max(0,1.0-(v.length*0.2));
+              r+='Score: '+s.toFixed(2)+'/1.00\n';
+              r+=s<0.5?'\nCRITICAL!':s<0.8?'\nWARNING':'';
+              o.textContent=r;
+          }
+          window.onload=scan;
+          </script>
           </body>
           </html>
           HTMLEOF
@@ -55,16 +109,6 @@ jobs:
         with:
           path: _site
 
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v2
